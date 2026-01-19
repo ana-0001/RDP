@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       runs-on:
-        description: "Select OS"
+        description: "Select Operating System"
         type: choice
         default: windows-2019
         options:
@@ -19,7 +19,7 @@ on:
         default: root
 
       pass:
-        description: "Password (leave empty = auto-generate)"
+        description: "Password (leave empty = auto generate)"
         required: false
         default: admin_000
 
@@ -29,8 +29,10 @@ jobs:
     timeout-minutes: 216000
 
     steps:
-    # ================= COMMON =================
-    - name: Prepare Credentials
+    # ==================================================
+    # 🔐 Credentials
+    # ==================================================
+    - name: Prepare credentials
       shell: bash
       run: |
         if [ -z "${{ inputs.pass }}" ]; then
@@ -41,34 +43,52 @@ jobs:
         echo "REMOTE_USER=${{ inputs.user }}" >> $GITHUB_ENV
         echo "REMOTE_PASS=$PASS" >> $GITHUB_ENV
 
-    - name: Install ngrok
+    # ==================================================
+    # 📦 Install ngrok (Windows)
+    # ==================================================
+    - name: Install ngrok (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $zip="$env:TEMP\ngrok.zip"
+        $dir="$env:ProgramFiles\ngrok"
+
+        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile $zip
+        Expand-Archive $zip -DestinationPath $dir -Force
+        echo "$dir" | Out-File -Append -FilePath $env:GITHUB_PATH
+
+    # ==================================================
+    # 📦 Install ngrok (Linux)
+    # ==================================================
+    - name: Install ngrok (Linux)
+      if: runner.os != 'Windows'
       shell: bash
       run: |
-        if command -v apt >/dev/null; then
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com stable main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update && sudo apt install ngrok -y
-        fi
+        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+        echo "deb https://ngrok-agent.s3.amazonaws.com stable main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+        sudo apt update && sudo apt install ngrok -y
 
+    # ==================================================
+    # 🔐 Configure ngrok
+    # ==================================================
     - name: Configure ngrok
       run: ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-    # ================= WINDOWS =================
-    - name: Windows RDP Setup
+    # ==================================================
+    # 🪟 Windows RDP
+    # ==================================================
+    - name: Enable RDP (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
         Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-        $u="${{ env.REMOTE_USER }}"
-        $p="${{ env.REMOTE_PASS }}"
+        net user $env:REMOTE_USER $env:REMOTE_PASS /add
+        net localgroup administrators $env:REMOTE_USER /add
+        net localgroup "Remote Desktop Users" $env:REMOTE_USER /add
 
-        net user $u $p /add
-        net localgroup administrators $u /add
-        net localgroup "Remote Desktop Users" $u /add
-
-    - name: Start ngrok RDP (auto-reconnect)
+    - name: Start ngrok RDP (auto reconnect)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
@@ -77,40 +97,38 @@ jobs:
           Start-Sleep 5
         }
 
-    # ================= LINUX =================
-    - name: Linux GNOME + VNC
+    # ==================================================
+    # 🐧 Ubuntu GNOME + VNC
+    # ==================================================
+    - name: Linux Desktop + VNC
       if: runner.os != 'Windows'
       shell: bash
       run: |
         sudo apt update || sudo dnf update -y
 
-        # Desktop + VNC
         sudo apt install ubuntu-desktop-minimal tigervnc-standalone-server gnome-session gdm3 -y \
         || sudo dnf groupinstall "GNOME Desktop" -y
 
-        USERNAME=${{ env.REMOTE_USER }}
-        PASSWORD=${{ env.REMOTE_PASS }}
+        sudo useradd -m $REMOTE_USER || true
+        echo "$REMOTE_USER:$REMOTE_PASS" | sudo chpasswd
+        sudo usermod -aG sudo $REMOTE_USER || true
 
-        sudo useradd -m $USERNAME || true
-        echo "$USERNAME:$PASSWORD" | sudo chpasswd
-        sudo usermod -aG sudo $USERNAME || true
+        mkdir -p /home/$REMOTE_USER/.vnc
+        echo "$REMOTE_PASS" | vncpasswd -f > /home/$REMOTE_USER/.vnc/passwd
+        chmod 600 /home/$REMOTE_USER/.vnc/passwd
+        chown -R $REMOTE_USER:$REMOTE_USER /home/$REMOTE_USER/.vnc
 
-        mkdir -p /home/$USERNAME/.vnc
-        echo "$PASSWORD" | vncpasswd -f > /home/$USERNAME/.vnc/passwd
-        chmod 600 /home/$USERNAME/.vnc/passwd
-        chown -R $USERNAME:$USERNAME /home/$USERNAME/.vnc
-
-        cat <<EOF > /home/$USERNAME/.vnc/xstartup
+        cat <<EOF > /home/$REMOTE_USER/.vnc/xstartup
         #!/bin/sh
         unset SESSION_MANAGER
         unset DBUS_SESSION_BUS_ADDRESS
         exec gnome-session &
         EOF
-        chmod +x /home/$USERNAME/.vnc/xstartup
+        chmod +x /home/$REMOTE_USER/.vnc/xstartup
 
-        sudo -u $USERNAME vncserver :1 -localhost no
+        sudo -u $REMOTE_USER vncserver :1 -localhost no
 
-    - name: Start ngrok VNC (auto-reconnect)
+    - name: Start ngrok VNC (auto reconnect)
       if: runner.os != 'Windows'
       run: |
         while true; do
@@ -118,6 +136,8 @@ jobs:
           sleep 5
         done
 
-    # ================= KEEP ALIVE =================
+    # ==================================================
+    # ♻ Keep Alive
+    # ==================================================
     - name: Keep session alive
       run: sleep infinity
