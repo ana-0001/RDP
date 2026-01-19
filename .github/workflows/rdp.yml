@@ -4,14 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       runs-on:
-        description: OS
+        description: "Select OS"
         type: choice
         default: windows-2019
         options:
-          - windows-2019
-          - windows-latest
-          - ubuntu-24.04
+          - windows-2019        # Windows 10
+          - windows-latest      # Windows 11
+          - ubuntu-24.04        # Ubuntu GNOME
           - fedora-42
+
+      user:
+        description: "Username (Windows / Linux)"
+        required: false
+        default: root
+
+      pass:
+        description: "Password (leave empty = auto-generate)"
+        required: false
+        default: admin_000
 
 jobs:
   remote:
@@ -20,6 +30,17 @@ jobs:
 
     steps:
     # ================= COMMON =================
+    - name: Prepare Credentials
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.pass }}" ]; then
+          PASS=$(openssl rand -base64 14)
+        else
+          PASS="${{ inputs.pass }}"
+        fi
+        echo "REMOTE_USER=${{ inputs.user }}" >> $GITHUB_ENV
+        echo "REMOTE_PASS=$PASS" >> $GITHUB_ENV
+
     - name: Install ngrok
       shell: bash
       run: |
@@ -40,13 +61,14 @@ jobs:
         Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-        $pass = [System.Web.Security.Membership]::GeneratePassword(16,4)
-        net user RDP $pass /add
-        net localgroup administrators RDP /add
-        net localgroup "Remote Desktop Users" RDP /add
-        echo "RDP_PASSWORD=$pass" >> $env:GITHUB_ENV
+        $u="${{ env.REMOTE_USER }}"
+        $p="${{ env.REMOTE_PASS }}"
 
-    - name: Start ngrok RDP (auto-restart)
+        net user $u $p /add
+        net localgroup administrators $u /add
+        net localgroup "Remote Desktop Users" $u /add
+
+    - name: Start ngrok RDP (auto-reconnect)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
@@ -56,35 +78,39 @@ jobs:
         }
 
     # ================= LINUX =================
-    - name: Linux Desktop + VNC
+    - name: Linux GNOME + VNC
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        set -e
         sudo apt update || sudo dnf update -y
 
-        # GNOME
+        # Desktop + VNC
         sudo apt install ubuntu-desktop-minimal tigervnc-standalone-server gnome-session gdm3 -y \
         || sudo dnf groupinstall "GNOME Desktop" -y
 
-        # VNC
-        PASS=$(openssl rand -base64 12)
-        mkdir -p ~/.vnc
-        echo "$PASS" | vncpasswd -f > ~/.vnc/passwd
-        chmod 600 ~/.vnc/passwd
-        echo "VNC_PASSWORD=$PASS" >> $GITHUB_ENV
+        USERNAME=${{ env.REMOTE_USER }}
+        PASSWORD=${{ env.REMOTE_PASS }}
 
-        cat <<EOF > ~/.vnc/xstartup
+        sudo useradd -m $USERNAME || true
+        echo "$USERNAME:$PASSWORD" | sudo chpasswd
+        sudo usermod -aG sudo $USERNAME || true
+
+        mkdir -p /home/$USERNAME/.vnc
+        echo "$PASSWORD" | vncpasswd -f > /home/$USERNAME/.vnc/passwd
+        chmod 600 /home/$USERNAME/.vnc/passwd
+        chown -R $USERNAME:$USERNAME /home/$USERNAME/.vnc
+
+        cat <<EOF > /home/$USERNAME/.vnc/xstartup
         #!/bin/sh
         unset SESSION_MANAGER
         unset DBUS_SESSION_BUS_ADDRESS
         exec gnome-session &
         EOF
-        chmod +x ~/.vnc/xstartup
+        chmod +x /home/$USERNAME/.vnc/xstartup
 
-        vncserver :1 -localhost no
+        sudo -u $USERNAME vncserver :1 -localhost no
 
-    - name: Start ngrok VNC (auto-restart)
+    - name: Start ngrok VNC (auto-reconnect)
       if: runner.os != 'Windows'
       run: |
         while true; do
@@ -93,5 +119,5 @@ jobs:
         done
 
     # ================= KEEP ALIVE =================
-    - name: Session Alive
+    - name: Keep session alive
       run: sleep infinity
