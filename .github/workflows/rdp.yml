@@ -8,19 +8,17 @@ on:
         type: choice
         default: windows-2019
         options:
-          - windows-2019        # Windows 10
-          - windows-latest      # Windows 11
-          - ubuntu-24.04        # Ubuntu GNOME
+          - windows-2019
+          - windows-latest
+          - ubuntu-24.04
           - fedora-42
 
       user:
         description: "Username (Windows / Linux)"
-        required: false
         default: root
 
       pass:
         description: "Password (leave empty = auto generate)"
-        required: false
         default: admin_000
 
 jobs:
@@ -88,17 +86,14 @@ jobs:
         net localgroup administrators $env:REMOTE_USER /add
         net localgroup "Remote Desktop Users" $env:REMOTE_USER /add
 
-    - name: Start ngrok RDP (auto reconnect)
+    - name: Start ngrok RDP (background)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        while ($true) {
-          ngrok tcp 3389 --log=stdout
-          Start-Sleep 5
-        }
+        Start-Process ngrok "tcp 3389 --log=stdout"
 
     # ==================================================
-    # 🐧 Ubuntu GNOME + VNC
+    # 🐧 Linux GNOME + VNC
     # ==================================================
     - name: Linux Desktop + VNC
       if: runner.os != 'Windows'
@@ -128,13 +123,32 @@ jobs:
 
         sudo -u $REMOTE_USER vncserver :1 -localhost no
 
-    - name: Start ngrok VNC (auto reconnect)
+    - name: Start ngrok VNC (background)
       if: runner.os != 'Windows'
+      run: ngrok tcp 5901 --log=stdout &
+
+    # ==================================================
+    # 🌐 Show Endpoint + Machine Info
+    # ==================================================
+    - name: Show ngrok Endpoint & Machine Info
+      shell: bash
       run: |
-        while true; do
-          ngrok tcp 5901 --log=stdout
-          sleep 5
-        done
+        sleep 10
+        ENDPOINT=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+
+        echo "================ NGROK INFO ================"
+        echo "Endpoint : $ENDPOINT"
+        echo "Policy   : TCP + TLS (Encrypted)"
+        echo "User     : $REMOTE_USER"
+        echo "OS       : $(uname -a || systeminfo | head -n 1)"
+        echo "CPU      : $(nproc 2>/dev/null || echo N/A)"
+        echo "RAM      : $(free -h 2>/dev/null | awk '/Mem:/ {print $2}' || echo N/A)"
+        echo "============================================"
+
+        echo "### 🌐 Ngrok Connection" >> $GITHUB_STEP_SUMMARY
+        echo "- **Endpoint:** \`$ENDPOINT\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Policy:** TCP + TLS" >> $GITHUB_STEP_SUMMARY
+        echo "- **User:** $REMOTE_USER" >> $GITHUB_STEP_SUMMARY
 
     # ==================================================
     # ♻ Keep Alive
