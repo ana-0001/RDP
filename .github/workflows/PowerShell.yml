@@ -1,0 +1,199 @@
+F9mjvdWW_Jr3idwFJiJXu
+- تحدث باللغة العربية المصرية بشكل دائم اثناء التحدث معي او كتابة الكود او الرد على الأسئلة ...
+
+
+# =========================================================
+# Windows 11 Dev Environment Bootstrap Script
+# Author: BomBa (Modified & Professional)
+# =========================================================
+
+$ErrorActionPreference = "Stop"
+
+# =========================================================
+# Utility Functions
+# =========================================================
+
+# Wait helper
+function Wait-Step($sec = 3) {
+    Write-Host "⏳ Waiting $sec seconds..." -ForegroundColor Yellow
+    Start-Sleep -Seconds $sec
+}
+
+# Restart PowerShell as Admin
+function Restart-PowerShell {
+    Write-Host "♻ Restarting PowerShell session as Admin to continue..." -ForegroundColor Cyan
+    Start-Process powershell "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
+# Create Desktop Shortcut
+function New-DesktopShortcut {
+    param(
+        [string]$TargetPath,
+        [string]$ShortcutName,
+        [string]$IconLocation = $null
+    )
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    $shortcutPath = Join-Path $desktop "$ShortcutName.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $TargetPath
+    if ($IconLocation) { $shortcut.IconLocation = $IconLocation }
+    $shortcut.Save()
+    Write-Host "✅ Shortcut created on Desktop: $ShortcutName"
+}
+
+# Reinstall Chocolatey Package
+function Reinstall-ChocoPackage($packageName) {
+    Write-Host "🔁 Reinstalling $packageName..." -ForegroundColor Cyan
+    if (choco list --local-only | Select-String $packageName) {
+        choco uninstall $packageName -y -f
+        Wait-Step 2
+    }
+    choco install $packageName -y --force
+    Wait-Step 3
+}
+
+# Ensure running as Admin
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Restart-PowerShell
+}
+
+# =========================================================
+# 01- Install Chocolatey (if missing)
+# =========================================================
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Write-Host "📦 Installing Chocolatey..." -ForegroundColor Green
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = 3072
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    Wait-Step 5
+}
+
+# =========================================================
+# 02- Install Browsers & Set Chrome as Default
+# =========================================================
+Reinstall-ChocoPackage "googlechrome"
+Reinstall-ChocoPackage "firefox"
+Start-Process "chrome.exe" "chrome://settings/defaultBrowser"
+
+# =========================================================
+# 03- Git
+# =========================================================
+Reinstall-ChocoPackage "git"
+
+# =========================================================
+# 04- NVM + Node.js
+# =========================================================
+Reinstall-ChocoPackage "nvm"
+nvm install latest
+nvm use latest
+Wait-Step 2
+node -v
+
+# =========================================================
+# 05- restart-powershell
+# =========================================================
+Restart-PowerShell
+
+# =========================================================
+# 06- Node.js
+# =========================================================
+# Node already installed via NVM in step 04
+
+# =========================================================
+# 07- Yarn & PNPM
+# =========================================================
+Write-Host "📦 Installing Yarn & PNPM globally..." -ForegroundColor Green
+npm install -g yarn pnpm
+Wait-Step 2
+yarn -v
+pnpm -v
+
+# =========================================================
+# 08- VS Code & Notepad++ & Antigravity & Windsurf
+# =========================================================
+Reinstall-ChocoPackage "vscode"
+Reinstall-ChocoPackage "notepadplusplus"
+Reinstall-ChocoPackage "antigravity" -y -ErrorAction SilentlyContinue
+
+# Antigravity Shortcut
+$antigravityPath = "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe"
+if (Test-Path $antigravityPath) {
+    New-DesktopShortcut -TargetPath $antigravityPath -ShortcutName "Antigravity"
+}
+
+# Windsurf via Winget fallback to Chocolatey
+$windsurfPath = "$env:LOCALAPPDATA\Programs\Windsurf\Windsurf.exe"
+if (-not (Test-Path $windsurfPath)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id Codeium.Windsurf -e --silent
+    } else {
+        Reinstall-ChocoPackage "windsurf"
+    }
+    Wait-Step 3
+}
+if (Test-Path $windsurfPath) { New-DesktopShortcut -TargetPath $windsurfPath -ShortcutName "Windsurf" }
+
+# =========================================================
+# 09- Install GitHub Desktop
+# =========================================================
+Reinstall-ChocoPackage "github-desktop"
+$githubDesktopPath = "$env:LOCALAPPDATA\GitHubDesktop\GitHubDesktop.exe"
+if (Test-Path $githubDesktopPath) { New-DesktopShortcut -TargetPath $githubDesktopPath -ShortcutName "GitHub Desktop" }
+
+# =========================================================
+# 10- Install Bruno 3.0.2 (Windows x64)
+# =========================================================
+$brunoPath = "$env:LOCALAPPDATA\Programs\Bruno\Bruno.exe"
+if (Test-Path $brunoPath) { Remove-Item -Path $brunoPath -Recurse -Force }
+
+if (Get-Command winget -ErrorAction SilentlyContinue) {
+    winget install --id Bruno.Bruno -e --silent
+} else {
+    Reinstall-ChocoPackage "bruno"
+}
+Wait-Step 3
+if (Test-Path $brunoPath) { New-DesktopShortcut -TargetPath $brunoPath -ShortcutName "Bruno" }
+
+# =========================================================
+# 11- Install WSL 2 - Full Setup + Docker
+# =========================================================
+Write-Host "🧠 Installing WSL 2..." -ForegroundColor Green
+$features = @("Microsoft-Windows-Subsystem-Linux","VirtualMachinePlatform")
+foreach ($feature in $features) {
+    if ((Get-WindowsOptionalFeature -Online -FeatureName $feature).State -ne "Enabled") {
+        Enable-WindowsOptionalFeature -Online -FeatureName $feature -NoRestart
+    }
+}
+wsl --set-default-version 2
+if (-not (wsl -l -q | Select-String "Ubuntu")) {
+    Write-Host "📦 Installing Ubuntu..."
+    wsl --install -d Ubuntu
+}
+Wait-Step 5
+
+# =========================================================
+# 12- Docker + Docker Desktop
+# =========================================================
+Reinstall-ChocoPackage "docker-desktop"
+Write-Host "🚀 Starting Docker Desktop..."
+Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+
+# Wait for Docker
+$maxRetries = 30; $retry = 0
+while ($retry -lt $maxRetries) {
+    if (Get-Command docker -ErrorAction SilentlyContinue) {
+        docker info > $null 2>&1
+        if ($LASTEXITCODE -eq 0) { Write-Host "✅ Docker is running!"; break }
+    }
+    Start-Sleep -Seconds 5
+    $retry++
+}
+if ($retry -eq $maxRetries) {
+    Write-Host "⚠ Docker did not start in expected time." -ForegroundColor Yellow
+}
+
+Write-Host "🎉 Development environment setup completed successfully!" -ForegroundColor Green
+Write-Host "🔁 Please reboot Windows to apply all changes." -ForegroundColor Cyan
