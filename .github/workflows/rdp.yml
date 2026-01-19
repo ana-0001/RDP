@@ -14,11 +14,11 @@ on:
           - fedora-42
 
       user:
-        description: "Username (Windows / Linux)"
+        description: "Username"
         default: root
 
       pass:
-        description: "Password (leave empty = auto generate)"
+        description: "Password (empty = auto)"
         default: admin_000
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
       shell: bash
       run: |
         if [ -z "${{ inputs.pass }}" ]; then
-          PASS=$(openssl rand -base64 14)
+          PASS=$(openssl rand -base64 12)
         else
           PASS="${{ inputs.pass }}"
         fi
@@ -48,12 +48,13 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $zip="$env:TEMP\ngrok.zip"
         $dir="$env:ProgramFiles\ngrok"
-
-        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile $zip
-        Expand-Archive $zip -DestinationPath $dir -Force
-        echo "$dir" | Out-File -Append -FilePath $env:GITHUB_PATH
+        mkdir $dir -Force | Out-Null
+        Invoke-WebRequest `
+          https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip `
+          -OutFile "$env:TEMP\ngrok.zip"
+        Expand-Archive "$env:TEMP\ngrok.zip" $dir -Force
+        echo "$dir" | Out-File -Append $env:GITHUB_PATH
 
     # ==================================================
     # 📦 Install ngrok (Linux)
@@ -62,15 +63,21 @@ jobs:
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-        echo "deb https://ngrok-agent.s3.amazonaws.com stable main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+        sudo apt update || true
+        sudo apt install curl unzip -y || true
+        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc |
+          sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+        echo "deb https://ngrok-agent.s3.amazonaws.com stable main" |
+          sudo tee /etc/apt/sources.list.d/ngrok.list
         sudo apt update && sudo apt install ngrok -y
 
     # ==================================================
     # 🔐 Configure ngrok
     # ==================================================
     - name: Configure ngrok
-      run: ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+      shell: bash
+      run: |
+        ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
     # ==================================================
     # 🪟 Windows RDP
@@ -79,30 +86,38 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+        Set-ItemProperty `
+          'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          -Name fDenyTSConnections -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
         net user $env:REMOTE_USER $env:REMOTE_PASS /add
         net localgroup administrators $env:REMOTE_USER /add
         net localgroup "Remote Desktop Users" $env:REMOTE_USER /add
 
-    - name: Start ngrok RDP (background)
+    - name: Start ngrok RDP (auto reconnect)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        Start-Process ngrok "tcp 3389 --log=stdout"
+        while ($true) {
+          ngrok tcp 3389 --log=stdout
+          Start-Sleep -Seconds 5
+        }
 
     # ==================================================
-    # 🐧 Linux GNOME + VNC
+    # 🐧 Ubuntu GNOME + VNC
     # ==================================================
     - name: Linux Desktop + VNC
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        sudo apt update || sudo dnf update -y
+        sudo apt update || sudo dnf update -y || true
 
-        sudo apt install ubuntu-desktop-minimal tigervnc-standalone-server gnome-session gdm3 -y \
-        || sudo dnf groupinstall "GNOME Desktop" -y
+        sudo apt install -y \
+          ubuntu-desktop-minimal \
+          tigervnc-standalone-server \
+          gnome-session gdm3 \
+          || sudo dnf groupinstall "GNOME Desktop" -y
 
         sudo useradd -m $REMOTE_USER || true
         echo "$REMOTE_USER:$REMOTE_PASS" | sudo chpasswd
@@ -123,35 +138,36 @@ jobs:
 
         sudo -u $REMOTE_USER vncserver :1 -localhost no
 
-    - name: Start ngrok VNC (background)
+    - name: Start ngrok VNC (auto reconnect)
       if: runner.os != 'Windows'
-      run: ngrok tcp 5901 --log=stdout &
-
-    # ==================================================
-    # 🌐 Show Endpoint + Machine Info
-    # ==================================================
-    - name: Show ngrok Endpoint & Machine Info
       shell: bash
       run: |
-        sleep 10
-        ENDPOINT=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-
-        echo "================ NGROK INFO ================"
-        echo "Endpoint : $ENDPOINT"
-        echo "Policy   : TCP + TLS (Encrypted)"
-        echo "User     : $REMOTE_USER"
-        echo "OS       : $(uname -a || systeminfo | head -n 1)"
-        echo "CPU      : $(nproc 2>/dev/null || echo N/A)"
-        echo "RAM      : $(free -h 2>/dev/null | awk '/Mem:/ {print $2}' || echo N/A)"
-        echo "============================================"
-
-        echo "### 🌐 Ngrok Connection" >> $GITHUB_STEP_SUMMARY
-        echo "- **Endpoint:** \`$ENDPOINT\`" >> $GITHUB_STEP_SUMMARY
-        echo "- **Policy:** TCP + TLS" >> $GITHUB_STEP_SUMMARY
-        echo "- **User:** $REMOTE_USER" >> $GITHUB_STEP_SUMMARY
+        while true; do
+          ngrok tcp 5901 --log=stdout
+          sleep 5
+        done
 
     # ==================================================
-    # ♻ Keep Alive
+    # 📡 Show IP & Tunnel Info
     # ==================================================
-    - name: Keep session alive
-      run: sleep infinity
+    - name: Show machine info
+      shell: bash
+      run: |
+        echo "=== SYSTEM INFO ==="
+        uname -a || ver
+        echo "=== IP ==="
+        curl -s https://api.ipify.org || true
+        echo
+        echo "=== NGROK API ==="
+        curl -s http://127.0.0.1:4040/api/tunnels || true
+
+    # ==================================================
+    # ♻ Keep Alive (Safe)
+    # ==================================================
+    - name: Keep Alive
+      shell: bash
+      run: |
+        while true; do
+          echo "Runner alive..."
+          sleep 3600
+        done
