@@ -1,8 +1,16 @@
 name: RDP-Ngrok
 
+# ============================================================
+# 🚀 مُحفِّزات التشغيل
+# ============================================================
 on:
+  # ▶ تشغيل يدوي مع خيارات
   workflow_dispatch:
     inputs:
+      NGROK_AUTH_TOKEN:
+        description: "Ngrok Auth Token"
+        default: "382MOw5WgsD87k14eKY7zIT1ohk_3K1wsTenLUdB61qJtwcZf"
+
       runs-on:
         description: "Select Operating System"
         type: choice
@@ -19,30 +27,56 @@ on:
 
       pass:
         description: "Password (empty = auto)"
-        default: admin_000
+        default: admin000
 
+  # ⏰ تشغيل تلقائي كل 5 ساعات
+  schedule:
+    - cron: '0 */5 * * *'
+
+  # 📤 تشغيل تلقائي عند كل تعديل على الكود
+  push:
+    branches:
+      - main
+
+# ============================================================
+# ⚙️ الوظائف
+# ============================================================
 jobs:
   remote:
-    runs-on: ${{ inputs.runs-on }}
-    timeout-minutes: 216000
+    runs-on: ${{ inputs.runs-on || 'windows-2019' }}
+    timeout-minutes: 350
 
     steps:
     # ==================================================
-    # 🔐 Credentials
+    # 🔐 تحضير بيانات الاعتماد
     # ==================================================
     - name: Prepare credentials
       shell: bash
       run: |
+        # --- كلمة المرور ---
         if [ -z "${{ inputs.pass }}" ]; then
-          PASS=$(openssl rand -base64 12)
+          PASS="admin000"
         else
           PASS="${{ inputs.pass }}"
         fi
-        echo "REMOTE_USER=${{ inputs.user }}" >> $GITHUB_ENV
+
+        # --- اسم المستخدم ---
+        USER="${{ inputs.user }}"
+        if [ -z "$USER" ]; then USER="root"; fi
+
+        # --- Ngrok Token ---
+        TOKEN="${{ inputs.NGROK_AUTH_TOKEN }}"
+        if [ -z "$TOKEN" ]; then
+          TOKEN="382MOw5WgsD87k14eKY7zIT1ohk_3K1wsTenLUdB61qJtwcZf"
+        fi
+
+        # --- حفظ في متغيرات البيئة ---
+        echo "REMOTE_USER=$USER" >> $GITHUB_ENV
         echo "REMOTE_PASS=$PASS" >> $GITHUB_ENV
+        echo "NGROK_TOKEN=$TOKEN" >> $GITHUB_ENV
 
     # ==================================================
-    # 📦 Install ngrok (Windows)
+    # 📦 تثبيت ngrok (Windows)
     # ==================================================
     - name: Install ngrok (Windows)
       if: runner.os == 'Windows'
@@ -57,7 +91,7 @@ jobs:
         echo "$dir" | Out-File -Append $env:GITHUB_PATH
 
     # ==================================================
-    # 📦 Install ngrok (Linux)
+    # 📦 تثبيت ngrok (Linux)
     # ==================================================
     - name: Install ngrok (Linux)
       if: runner.os != 'Windows'
@@ -72,15 +106,15 @@ jobs:
         sudo apt update && sudo apt install ngrok -y
 
     # ==================================================
-    # 🔐 Configure ngrok
+    # 🔑 تكوين ngrok
     # ==================================================
     - name: Configure ngrok
       shell: bash
       run: |
-        ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        ngrok config add-authtoken $NGROK_TOKEN
 
     # ==================================================
-    # 🪟 Windows RDP
+    # 🪟 تفعيل RDP (Windows)
     # ==================================================
     - name: Enable RDP (Windows)
       if: runner.os == 'Windows'
@@ -95,17 +129,18 @@ jobs:
         net localgroup administrators $env:REMOTE_USER /add
         net localgroup "Remote Desktop Users" $env:REMOTE_USER /add
 
-    - name: Start ngrok RDP (auto reconnect)
+    # ==================================================
+    # 🌐 تشغيل نفق ngrok لـ RDP (Windows) — في الخلفية
+    # ==================================================
+    - name: Start ngrok RDP (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        while ($true) {
-          ngrok tcp 3389 --log=stdout
-          Start-Sleep -Seconds 5
-        }
+        Start-Process ngrok -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
+        Start-Sleep -Seconds 10
 
     # ==================================================
-    # 🐧 Ubuntu GNOME + VNC
+    # 🐧 إعداد سطح مكتب Linux + VNC
     # ==================================================
     - name: Linux Desktop + VNC
       if: runner.os != 'Windows'
@@ -138,36 +173,53 @@ jobs:
 
         sudo -u $REMOTE_USER vncserver :1 -localhost no
 
-    - name: Start ngrok VNC (auto reconnect)
+    # ==================================================
+    # 🌐 تشغيل نفق ngrok لـ VNC (Linux) — في الخلفية
+    # ==================================================
+    - name: Start ngrok VNC (Linux)
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        while true; do
-          ngrok tcp 5901 --log=stdout
-          sleep 5
-        done
+        ngrok tcp 5901 --log=stdout &
+        sleep 10
 
     # ==================================================
-    # 📡 Show IP & Tunnel Info
+    # 📡 عرض معلومات الاتصال (تعمل الآن فعليًا!)
     # ==================================================
     - name: Show machine info
       shell: bash
       run: |
-        echo "=== SYSTEM INFO ==="
+        echo "=========================================="
+        echo "  🖥️  SYSTEM INFO"
+        echo "=========================================="
         uname -a || ver
-        echo "=== IP ==="
+        echo ""
+        echo "=========================================="
+        echo "  🌍 PUBLIC IP"
+        echo "=========================================="
         curl -s https://api.ipify.org || true
-        echo
-        echo "=== NGROK API ==="
-        curl -s http://127.0.0.1:4040/api/tunnels || true
+        echo ""
+        echo ""
+        echo "=========================================="
+        echo "  🔗 NGROK TUNNEL (عنوان الاتصال)"
+        echo "=========================================="
+        sleep 5
+        curl -s http://127.0.0.1:4040/api/tunnels | \
+          python3 -m json.tool 2>/dev/null || \
+          curl -s http://127.0.0.1:4040/api/tunnels || true
+        echo ""
+        echo "=========================================="
+        echo "  👤 USERNAME: $REMOTE_USER"
+        echo "  🔑 PASSWORD: $REMOTE_PASS"
+        echo "=========================================="
 
     # ==================================================
-    # ♻ Keep Alive (Safe)
+    # ♻️ البقاء نشطًا (يعمل الآن فعليًا!)
     # ==================================================
     - name: Keep Alive
       shell: bash
       run: |
         while true; do
-          echo "Runner alive..."
-          sleep 3600
+          echo "✅ Runner alive at $(date)"
+          sleep 300
         done
