@@ -159,7 +159,7 @@ jobs:
         net localgroup "Remote Desktop Users" $u /add 2>$null
 
     # ==================================================
-    # 🐧 إعداد Ubuntu GNOME الأصلي + VNC
+    # 🐧 إعداد Ubuntu GNOME الأصلي + VNC (مُصلح)
     # ==================================================
     - name: Setup Ubuntu GNOME Desktop + VNC
       if: env.SYSTEM_TYPE == 'ubuntu-24.04-gnome' || env.SYSTEM_TYPE == 'fedora-42'
@@ -168,15 +168,15 @@ jobs:
         set -e
         export DEBIAN_FRONTEND=noninteractive
 
-        echo "📦 Installing Ubuntu GNOME Desktop..."
+        echo "📦 Installing Ubuntu GNOME Desktop & VNC Tools..."
         sudo apt-get update -y
-        # تثبيت حزم سطح المكتب الرسمية الخاصة بأوبونتو بدون أي إضافات خارجية
-        sudo apt-get install -y --no-install-recommends \
-          ubuntu-desktop \
+        sudo apt-get install -y \
+          ubuntu-desktop-minimal \
           gnome-terminal \
           dbus-x11 \
           tigervnc-standalone-server \
-          tigervnc-common
+          tigervnc-common \
+          tigervnc-tools
 
         # إعداد المستخدم
         if [ "$REMOTE_USER" != "root" ]; then
@@ -185,12 +185,12 @@ jobs:
         fi
         echo "$REMOTE_USER:$REMOTE_PASS" | sudo chpasswd
 
-        # إعداد VNC
+        # إعداد كلمة مرور VNC
         sudo mkdir -p "$HOME_DIR/.vnc"
         echo "$REMOTE_PASS" | vncpasswd -f | sudo tee "$HOME_DIR/.vnc/passwd" >/dev/null
         sudo chmod 600 "$HOME_DIR/.vnc/passwd"
 
-        # كتابة سكريبت الإقلاع لضمان واجهة Ubuntu GNOME الرسمية
+        # كتابة سكريبت الإقلاع لـ Ubuntu GNOME الأصلي
         sudo tee "$HOME_DIR/.vnc/xstartup" > /dev/null <<'EOF'
         #!/bin/sh
         unset SESSION_MANAGER
@@ -200,14 +200,13 @@ jobs:
         export XDG_MENU_PREFIX="gnome-"
         export GNOME_SHELL_SESSION_MODE="ubuntu"
         
-        # استخدام dbus-launch مهم جداً لمنع تعليق GNOME في بيئة VNC
         exec dbus-launch --exit-with-session gnome-session --session=ubuntu
         EOF
 
         sudo chmod +x "$HOME_DIR/.vnc/xstartup"
         sudo chown -R "$REMOTE_USER:$REMOTE_USER" "$HOME_DIR/.vnc" 2>/dev/null || true
 
-        # تشغيل السيرفر
+        # تشغيل VNC Server
         sudo -u "$REMOTE_USER" vncserver -kill :1 2>/dev/null || true
         sudo -u "$REMOTE_USER" vncserver :1 -localhost no -geometry 1920x1080 -depth 24
 
@@ -238,7 +237,7 @@ jobs:
       if: runner.os != 'Windows' && env.INSTALL_TOOLS == 'on'
       shell: bash
       run: |
-        set +e # منع إيقاف الـ Workflow في حال فشل أي أداة فرعية
+        set +e
         export DEBIAN_FRONTEND=noninteractive
 
         sudo apt-get update -y || true
