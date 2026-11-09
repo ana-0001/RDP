@@ -4,7 +4,6 @@ name: RDP-Ngrok
 # 🚀 مُحفِّزات التشغيل
 # ============================================================
 on:
-  # ▶ تشغيل يدوي مع خيارات
   workflow_dispatch:
     inputs:
       NGROK_AUTH_TOKEN:
@@ -17,10 +16,10 @@ on:
         default: ubuntu-24.04-gnome
         options:
           - ubuntu-24.04-gnome      # 🐧 Ubuntu + GNOME Desktop (VNC)
-          - ubuntu-24.04-server     # 🖧 Ubuntu Server (SSH فقط - بدون واجهة)
+          - ubuntu-24.04-server     # 🖧 Ubuntu Server (SSH فقط)
           - windows-2019            # 🪟 Windows Server 2019 (RDP)
           - windows-latest          # 🪟 أحدث Windows (RDP)
-          - fedora-42               # 🎩 Fedora 42 (VNC)
+          - fedora-42               # 🎩 يُشغَّل على ubuntu-24.04 (لا runner فيدورا)
 
       user:
         description: "Username"
@@ -31,7 +30,7 @@ on:
         default: admin000
 
       auto_schedule:
-        description: "Auto Schedule (تشغيل تلقائي كل 5 ساعات)"
+        description: "Auto Schedule (يتطلب Variable: AUTO_SCHEDULE=on)"
         type: choice
         default: "off"
         options:
@@ -39,14 +38,13 @@ on:
           - "on"
 
       install_tools:
-        description: "Install Development Tools (تثبيت أدوات التطوير)"
+        description: "Install Development Tools"
         type: choice
         default: "on"
         options:
           - "on"
           - "off"
 
-  # ⏰ تشغيل تلقائي كل 5 ساعات (يتحقق من auto_schedule داخليًا)
   schedule:
     - cron: '0 */5 * * *'
 
@@ -55,17 +53,17 @@ on:
 # ============================================================
 jobs:
   remote:
-    # تحويل الخيارات المخصصة إلى runners حقيقية
     runs-on: >-
       ${{
-        (inputs.runs-on == 'ubuntu-24.04-gnome' && 'ubuntu-24.04') ||
+        (inputs.runs-on == 'ubuntu-24.04-gnome'  && 'ubuntu-24.04') ||
         (inputs.runs-on == 'ubuntu-24.04-server' && 'ubuntu-24.04') ||
+        (inputs.runs-on == 'fedora-42'           && 'ubuntu-24.04') ||
         inputs.runs-on ||
         'ubuntu-24.04'
       }}
     timeout-minutes: 350
 
-    # تخطي التشغيل المجدول إذا كان auto_schedule = off
+    # التشغيل المجدول يعمل فقط إذا AUTO_SCHEDULE=on في Repository Variables
     if: >-
       github.event_name != 'schedule' ||
       vars.AUTO_SCHEDULE == 'on'
@@ -77,39 +75,46 @@ jobs:
     - name: Prepare credentials
       shell: bash
       run: |
-        # --- كلمة المرور ---
+        set -e
+
         PASS="${{ inputs.pass }}"
         if [ -z "$PASS" ]; then PASS="admin000"; fi
 
-        # --- اسم المستخدم ---
         USER="${{ inputs.user }}"
         if [ -z "$USER" ]; then USER="root"; fi
 
-        # --- Ngrok Token ---
         TOKEN="${{ inputs.NGROK_AUTH_TOKEN }}"
         if [ -z "$TOKEN" ]; then
           TOKEN="382MOw5WgsD87k14eKY7zIT1ohk_3K1wsTenLUdB61qJtwcZf"
         fi
 
-        # --- نوع النظام ---
         SYSTEM="${{ inputs.runs-on }}"
         if [ -z "$SYSTEM" ]; then SYSTEM="ubuntu-24.04-gnome"; fi
 
-        # --- تثبيت الأدوات ---
         INSTALL="${{ inputs.install_tools }}"
         if [ -z "$INSTALL" ]; then INSTALL="on"; fi
 
-        # --- حفظ في متغيرات البيئة ---
-        echo "REMOTE_USER=$USER" >> $GITHUB_ENV
-        echo "REMOTE_PASS=$PASS" >> $GITHUB_ENV
-        echo "NGROK_TOKEN=$TOKEN" >> $GITHUB_ENV
-        echo "SYSTEM_TYPE=$SYSTEM" >> $GITHUB_ENV
-        echo "INSTALL_TOOLS=$INSTALL" >> $GITHUB_ENV
+        # تحديد المجلد المنزلي بشكل صحيح (root ≠ /home/root)
+        if [ "$USER" = "root" ]; then
+          HOME_DIR="/root"
+        else
+          HOME_DIR="/home/$USER"
+        fi
+
+        {
+          echo "REMOTE_USER=$USER"
+          echo "REMOTE_PASS=$PASS"
+          echo "NGROK_TOKEN=$TOKEN"
+          echo "SYSTEM_TYPE=$SYSTEM"
+          echo "INSTALL_TOOLS=$INSTALL"
+          echo "HOME_DIR=$HOME_DIR"
+        } >> "$GITHUB_ENV"
 
         echo "=========================================="
-        echo "  🖥️  System:   $SYSTEM"
-        echo "  👤 User:      $USER"
-        echo "  🔧 Tools:     $INSTALL"
+        echo "  🖥️  System : $SYSTEM"
+        echo "  👤 User   : $USER"
+        echo "  🏠 Home   : $HOME_DIR"
+        echo "  🔧 Tools  : $INSTALL"
         echo "=========================================="
 
     # ==================================================
@@ -119,28 +124,30 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $dir="$env:ProgramFiles\ngrok"
-        mkdir $dir -Force | Out-Null
+        $dir = "$env:ProgramFiles\ngrok"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
         Invoke-WebRequest `
-          https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip `
+          "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" `
           -OutFile "$env:TEMP\ngrok.zip"
-        Expand-Archive "$env:TEMP\ngrok.zip" $dir -Force
-        echo "$dir" | Out-File -Append $env:GITHUB_PATH
+        Expand-Archive "$env:TEMP\ngrok.zip" -DestinationPath $dir -Force
+        Add-Content -Path $env:GITHUB_PATH -Value $dir
+        & "$dir\ngrok.exe" version
 
     # ==================================================
-    # 📦 تثبيت ngrok (Linux)
+    # 📦 تثبيت ngrok (Linux) — تحميل مباشر (مُصلح 100%)
     # ==================================================
     - name: Install ngrok (Linux)
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        sudo apt update || true
-        sudo apt install curl unzip -y || true
-        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc |
-          sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-        echo "deb https://ngrok-agent.s3.amazonaws.com stable main" |
-          sudo tee /etc/apt/sources.list.d/ngrok.list
-        sudo apt update && sudo apt install ngrok -y
+        set -e
+        curl -fsSL \
+          "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz" \
+          -o /tmp/ngrok.tgz
+        sudo tar -xzf /tmp/ngrok.tgz -C /usr/local/bin
+        sudo chmod +x /usr/local/bin/ngrok
+        rm -f /tmp/ngrok.tgz
+        ngrok version
 
     # ==================================================
     # 🔑 تكوين ngrok
@@ -148,7 +155,9 @@ jobs:
     - name: Configure ngrok
       shell: bash
       run: |
-        ngrok config add-authtoken $NGROK_TOKEN
+        set -e
+        ngrok config add-authtoken "$NGROK_TOKEN"
+        echo "✅ ngrok configured"
 
     # ==================================================
     # 🪟 تفعيل RDP (Windows)
@@ -158,13 +167,21 @@ jobs:
       shell: pwsh
       run: |
         Set-ItemProperty `
-          'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
           -Name fDenyTSConnections -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-        net user $env:REMOTE_USER $env:REMOTE_PASS /add
-        net localgroup administrators $env:REMOTE_USER /add
-        net localgroup "Remote Desktop Users" $env:REMOTE_USER /add
+        # إنشاء المستخدم إن لم يكن موجودًا
+        $u = $env:REMOTE_USER
+        $p = $env:REMOTE_PASS
+        if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
+          net user $u $p /add
+        } else {
+          net user $u $p
+        }
+        net localgroup administrators $u /add 2>$null
+        net localgroup "Remote Desktop Users" $u /add 2>$null
+        Write-Host "✅ RDP enabled for $u"
 
     # ==================================================
     # 🐧 إعداد Ubuntu GNOME + VNC
@@ -173,57 +190,87 @@ jobs:
       if: env.SYSTEM_TYPE == 'ubuntu-24.04-gnome' || env.SYSTEM_TYPE == 'fedora-42'
       shell: bash
       run: |
-        sudo apt update || sudo dnf update -y || true
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
 
-        sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+        sudo apt-get update -y
+        sudo apt-get install -y \
           ubuntu-desktop-minimal \
           tigervnc-standalone-server \
-          gnome-session gdm3 dbus-x11 \
-          || sudo dnf groupinstall "GNOME Desktop" -y
+          tigervnc-common \
+          gnome-session \
+          dbus-x11 \
+          xfce4 xfce4-goodies \
+          || true
 
-        sudo useradd -m -s /bin/bash $REMOTE_USER || true
+        # ---------- المستخدم ----------
+        if [ "$REMOTE_USER" != "root" ]; then
+          sudo useradd -m -s /bin/bash "$REMOTE_USER" 2>/dev/null || true
+          sudo usermod -aG sudo "$REMOTE_USER" || true
+        fi
         echo "$REMOTE_USER:$REMOTE_PASS" | sudo chpasswd
-        sudo usermod -aG sudo $REMOTE_USER || true
 
-        sudo mkdir -p /home/$REMOTE_USER/.vnc
-        echo "$REMOTE_PASS" | vncpasswd -f | sudo tee /home/$REMOTE_USER/.vnc/passwd >/dev/null
-        sudo chmod 600 /home/$REMOTE_USER/.vnc/passwd
+        # ---------- VNC ----------
+        sudo mkdir -p "$HOME_DIR/.vnc"
+        echo "$REMOTE_PASS" | sudo tee "$HOME_DIR/.vnc/passwd" >/dev/null
+        # تشفير كلمة مرور VNC بشكل صحيح
+        echo "$REMOTE_PASS" | vncpasswd -f | sudo tee "$HOME_DIR/.vnc/passwd" >/dev/null
+        sudo chmod 600 "$HOME_DIR/.vnc/passwd"
 
-        sudo tee /home/$REMOTE_USER/.vnc/xstartup > /dev/null <<'EOF'
+        # xstartup — XFCE أخف وأكثر استقرارًا على CI من GNOME الكامل
+        sudo tee "$HOME_DIR/.vnc/xstartup" > /dev/null <<'EOF'
         #!/bin/sh
         unset SESSION_MANAGER
         unset DBUS_SESSION_BUS_ADDRESS
-        exec gnome-session &
+        export XKL_XMODMAP_DISABLE=1
+        export XDG_CURRENT_DESKTOP="XFCE"
+        if command -v startxfce4 >/dev/null 2>&1; then
+          exec startxfce4
+        else
+          exec gnome-session
+        fi
         EOF
+        sudo chmod +x "$HOME_DIR/.vnc/xstartup"
+        sudo chown -R "$REMOTE_USER:$REMOTE_USER" "$HOME_DIR/.vnc" 2>/dev/null || \
+        sudo chown -R "$REMOTE_USER" "$HOME_DIR/.vnc" 2>/dev/null || true
 
-        sudo chmod +x /home/$REMOTE_USER/.vnc/xstartup
-        sudo chown -R $REMOTE_USER:$REMOTE_USER /home/$REMOTE_USER/.vnc
+        # إيقاف أي جلسة سابقة ثم التشغيل
+        sudo -u "$REMOTE_USER" vncserver -kill :1 2>/dev/null || true
+        sudo -u "$REMOTE_USER" vncserver :1 \
+          -localhost no \
+          -geometry 1920x1080 \
+          -depth 24 \
+          || sudo vncserver :1 -localhost no -geometry 1920x1080 -depth 24
 
-        sudo -u $REMOTE_USER vncserver :1 -localhost no -geometry 1920x1080
+        echo "✅ VNC ready on :5901"
 
     # ==================================================
-    # 🖧 إعداد Ubuntu Server (SSH فقط - بدون واجهة)
+    # 🖧 إعداد Ubuntu Server (SSH فقط)
     # ==================================================
     - name: Setup Ubuntu Server (SSH only)
       if: env.SYSTEM_TYPE == 'ubuntu-24.04-server'
       shell: bash
       run: |
-        sudo apt update || true
-        sudo DEBIAN_FRONTEND=noninteractive apt install -y openssh-server
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
 
-        sudo useradd -m -s /bin/bash $REMOTE_USER || true
+        sudo apt-get update -y
+        sudo apt-get install -y openssh-server
+
+        if [ "$REMOTE_USER" != "root" ]; then
+          sudo useradd -m -s /bin/bash "$REMOTE_USER" 2>/dev/null || true
+          sudo usermod -aG sudo "$REMOTE_USER" || true
+        fi
         echo "$REMOTE_USER:$REMOTE_PASS" | sudo chpasswd
-        sudo usermod -aG sudo $REMOTE_USER || true
 
-        # تفعيل SSH مع كلمة مرور
-        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
 
-        sudo systemctl restart ssh || sudo service ssh restart
         sudo systemctl enable ssh || true
+        sudo systemctl restart ssh || sudo service ssh restart || true
 
-        echo "✅ SSH Server جاهز على المنفذ 22"
+        echo "✅ SSH ready on :22"
 
     # ==================================================
     # 🛠️ تثبيت أدوات التطوير (Linux)
@@ -232,97 +279,133 @@ jobs:
       if: runner.os != 'Windows' && env.INSTALL_TOOLS == 'on'
       shell: bash
       run: |
-        set +e  # لا توقف عند الأخطاء
+        set +e   # لا تتوقف عند فشل أي أداة
         export DEBIAN_FRONTEND=noninteractive
 
-        echo "=========================================="
-        echo "  📦 01 - تثبيت المتصفحات"
-        echo "=========================================="
-        # Google Chrome
-        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | \
-          sudo tee /etc/apt/sources.list.d/google-chrome.list
-        sudo apt update
-        sudo apt install -y google-chrome-stable firefox
+        sudo apt-get update -y || true
+        sudo apt-get install -y \
+          wget curl git ca-certificates gnupg lsb-release \
+          python3 python3-pip python3-venv unzip tar \
+          software-properties-common apt-transport-https \
+          || true
 
-        # جعل Chrome افتراضي
-        sudo update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/bin/google-chrome-stable 200
-        sudo update-alternatives --set x-www-browser /usr/bin/google-chrome-stable
-        xdg-settings set default-web-browser google-chrome.desktop || true
+        # --------------------------------------------------
+        # 01) المتصفحات + Chrome افتراضي
+        # --------------------------------------------------
+        echo "📦 01 - Browsers"
+        curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+          | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg 2>/dev/null
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+          | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+        sudo apt-get update -y || true
+        sudo apt-get install -y google-chrome-stable firefox || true
+        sudo update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/bin/google-chrome-stable 200 2>/dev/null
+        sudo update-alternatives --set x-www-browser /usr/bin/google-chrome-stable 2>/dev/null
+        xdg-settings set default-web-browser google-chrome.desktop 2>/dev/null || true
 
-        echo "=========================================="
-        echo "  📦 02 - تثبيت Git"
-        echo "=========================================="
-        sudo apt install -y git
-        git --version
+        # --------------------------------------------------
+        # 02) Git
+        # --------------------------------------------------
+        echo "📦 02 - Git"
+        sudo apt-get install -y git || true
+        git --version || true
 
-        echo "=========================================="
-        echo "  📦 03 - تثبيت NVM + Node.js 20.15.1 + Yarn + PNPM"
-        echo "=========================================="
-        # تثبيت NVM للمستخدم الحالي والمستخدم الجديد
-        export NVM_DIR="/home/$REMOTE_USER/.nvm"
-        sudo -u $REMOTE_USER bash -c '
-          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-          export NVM_DIR="$HOME/.nvm"
-          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-          nvm install 20.15.1
-          nvm use 20.15.1
-          nvm alias default 20.15.1
-          npm install -g yarn pnpm
-        '
+        # --------------------------------------------------
+        # 03) NVM + Node 20.15.1 + Yarn + PNPM
+        # --------------------------------------------------
+        echo "📦 03 - NVM / Node / Yarn / PNPM"
+        sudo -u "$REMOTE_USER" bash <<'NODEEOF' || true
+        set +e
+        export HOME="${HOME_DIR:-$HOME}"
+        curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        nvm install 20.15.1
+        nvm alias default 20.15.1
+        nvm use 20.15.1
+        npm install -g yarn pnpm npm@latest
+        node -v && npm -v && yarn -v && pnpm -v
+        NODEEOF
 
-        echo "=========================================="
-        echo "  📦 04 - تثبيت VS Code + Notepad++ (قدر الإمكان)"
-        echo "=========================================="
-        # VS Code
-        wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
-        sudo install -o root -g root -m 644 microsoft.gpg /etc/apt/trusted.gpg.d/
-        sudo sh -c 'echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/trusted.gpg.d/microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list'
-        sudo apt update
-        sudo apt install -y code
+        # إضافة NVM لـ .bashrc
+        if ! grep -q 'NVM_DIR' "$HOME_DIR/.bashrc" 2>/dev/null; then
+          sudo tee -a "$HOME_DIR/.bashrc" >/dev/null <<'BASHRC'
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+        BASHRC
+        fi
+        sudo chown -R "$REMOTE_USER:$REMOTE_USER" "$HOME_DIR/.nvm" 2>/dev/null || true
+        sudo chown "$REMOTE_USER:$REMOTE_USER" "$HOME_DIR/.bashrc" 2>/dev/null || true
 
-        # Notepad++ عبر Snap (أو snapd + wine)
-        sudo apt install -y snapd || true
-        sudo snap install notepad-plus-plus || echo "⚠ Notepad++ غير متاح على Linux مباشرة"
+        # --------------------------------------------------
+        # 04) VS Code + Notepad++ + أدوات مساعدة
+        # --------------------------------------------------
+        echo "📦 04 - VS Code / editors"
+        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+          | sudo gpg --dearmor -o /usr/share/keyrings/microsoft.gpg 2>/dev/null
+        echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main" \
+          | sudo tee /etc/apt/sources.list.d/vscode.list >/dev/null
+        sudo apt-get update -y || true
+        sudo apt-get install -y code || true
 
-        # Antigravity - أداة ألعاب Python، تُثبت عبر pip
-        sudo apt install -y python3-pip
-        pip3 install antigravity || true
+        # Notepad++ (snap — قد يفشل على بعض الـ runners)
+        sudo apt-get install -y snapd 2>/dev/null || true
+        sudo snap install notepad-plus-plus 2>/dev/null || echo "⚠ Notepad++ snap skipped"
 
-        echo "=========================================="
-        echo "  📦 05 - تثبيت Bruno 3.0.2"
-        echo "=========================================="
-        wget -q "https://github.com/usebruno/bruno/releases/download/v1.29.1/bruno_1.29.1_amd64_linux.deb" -O /tmp/bruno.deb || \
-        wget -q "https://github.com/usebruno/bruno/releases/download/v3.0.2/bruno_3.0.2_amd64_linux.deb" -O /tmp/bruno.deb
-        sudo dpkg -i /tmp/bruno.deb || sudo apt install -f -y
+        # antigravity (حزمة بايثون رمزية من Google — للتوافق مع الطلب)
+        pip3 install --break-system-packages antigravity 2>/dev/null \
+          || pip3 install antigravity 2>/dev/null \
+          || true
 
-        echo "=========================================="
-        echo "  📦 06 - تثبيت Docker + Compose"
-        echo "=========================================="
-        # Docker
-        curl -fsSL https://get.docker.com -o get-docker.sh
-        sudo sh get-docker.sh
-        sudo usermod -aG docker $REMOTE_USER
+        # --------------------------------------------------
+        # 05) Bruno API Client
+        # --------------------------------------------------
+        echo "📦 05 - Bruno"
+        BRUNO_OK=0
+        for VER in "1.38.1" "1.34.0" "1.29.1"; do
+          URL="https://github.com/usebruno/bruno/releases/download/v${VER}/bruno_${VER}_amd64_linux.deb"
+          if wget -q --spider "$URL" 2>/dev/null; then
+            wget -q "$URL" -O /tmp/bruno.deb && BRUNO_OK=1 && break
+          fi
+        done
+        if [ "$BRUNO_OK" = "1" ]; then
+          sudo dpkg -i /tmp/bruno.deb 2>/dev/null || sudo apt-get install -f -y || true
+        else
+          echo "⚠ Bruno deb not found — trying npm global"
+          # fallback عبر npm إن توفر
+          export NVM_DIR="$HOME_DIR/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+          npm install -g @usebruno/cli 2>/dev/null || true
+        fi
+        rm -f /tmp/bruno.deb
 
-        # Docker Compose (إن لم يكن موجودًا)
-        sudo apt install -y docker-compose-plugin || \
-        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-          -o /usr/local/bin/docker-compose
-        sudo chmod +x /usr/local/bin/docker-compose 2>/dev/null || true
+        # --------------------------------------------------
+        # 06) Docker + Dockge + PostgreSQL + MySQL + Adminer + MinIO
+        # --------------------------------------------------
+        echo "📦 06 - Docker + services"
+        if ! command -v docker >/dev/null 2>&1; then
+          curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+          sudo sh /tmp/get-docker.sh || true
+          rm -f /tmp/get-docker.sh
+        fi
+        sudo usermod -aG docker "$REMOTE_USER" 2>/dev/null || true
+        sudo systemctl enable docker 2>/dev/null || true
+        sudo systemctl start docker 2>/dev/null || true
 
-        echo "=========================================="
-        echo "  🐳 تشغيل الخدمات: Dockge + PostgreSQL + MySQL + Adminer + MinIO"
-        echo "=========================================="
-        sudo mkdir -p /opt/stacks
-        sudo mkdir -p /opt/data/{postgres,mysql,minio}
+        # compose plugin
+        sudo apt-get install -y docker-compose-plugin 2>/dev/null || true
+        if ! docker compose version >/dev/null 2>&1; then
+          sudo curl -fsSL \
+            "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+            -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+        fi
 
-        # ملف docker-compose شامل
+        sudo mkdir -p /opt/stacks /opt/data/postgres /opt/data/mysql /opt/data/minio /opt/stacks/dockge/data
+
         sudo tee /opt/stacks/docker-compose.yml > /dev/null <<'COMPOSE'
-        version: '3.8'
-
         services:
-
-          # 🎛 Dockge - واجهة إدارة Docker
           dockge:
             image: louislam/dockge:1
             container_name: dockge
@@ -331,12 +414,11 @@ jobs:
               - "5001:5001"
             volumes:
               - /var/run/docker.sock:/var/run/docker.sock
-              - ./dockge/data:/app/data
+              - /opt/stacks/dockge/data:/app/data
               - /opt/stacks:/opt/stacks
             environment:
-              - DOCKGE_STACKS_DIR=/opt/stacks
+              DOCKGE_STACKS_DIR: /opt/stacks
 
-          # 🐘 PostgreSQL
           postgres:
             image: postgres:16
             container_name: postgres
@@ -350,7 +432,6 @@ jobs:
             volumes:
               - /opt/data/postgres:/var/lib/postgresql/data
 
-          # 🐬 MySQL
           mysql:
             image: mysql:8
             container_name: mysql
@@ -365,15 +446,16 @@ jobs:
             volumes:
               - /opt/data/mysql:/var/lib/mysql
 
-          # 🛠 Adminer - واجهة إدارة قواعد البيانات
           adminer:
             image: adminer:latest
             container_name: adminer
             restart: unless-stopped
             ports:
               - "8080:8080"
+            depends_on:
+              - postgres
+              - mysql
 
-          # 🗄 MinIO - تخزين كائنات متوافق مع S3
           minio:
             image: minio/minio:latest
             container_name: minio
@@ -389,11 +471,15 @@ jobs:
               - /opt/data/minio:/data
         COMPOSE
 
-        # تشغيل جميع الخدمات
         cd /opt/stacks
-        sudo docker compose up -d || sudo docker-compose up -d
+        sudo docker compose up -d 2>/dev/null \
+          || sudo docker-compose up -d 2>/dev/null \
+          || true
 
-        echo "✅ جميع الأدوات ثُبتت بنجاح!"
+        echo "=========================================="
+        echo "  ✅ Linux tools installation finished"
+        echo "=========================================="
+        docker ps 2>/dev/null || true
 
     # ==================================================
     # 🛠️ تثبيت أدوات التطوير (Windows)
@@ -402,182 +488,195 @@ jobs:
       if: runner.os == 'Windows' && env.INSTALL_TOOLS == 'on'
       shell: pwsh
       run: |
-        # تثبيت Chocolatey (مدير حزم Windows)
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        $ErrorActionPreference = "Continue"
 
-        # تحديث متغيرات البيئة
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        # Chocolatey
+        if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        }
+        $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                    [Environment]::GetEnvironmentVariable("Path","User")
 
-        Write-Host "=========================================="
-        Write-Host "  📦 01 - تثبيت المتصفحات"
-        Write-Host "=========================================="
-        choco install googlechrome firefox -y --ignore-checksums
+        Write-Host "📦 01 - Browsers"
+        choco install googlechrome firefox -y --ignore-checksums --no-progress
 
-        # جعل Chrome افتراضي
-        reg add "HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" /v ProgId /t REG_SZ /d ChromeHTML /f
+        Write-Host "📦 02 - Git"
+        choco install git -y --no-progress
 
-        Write-Host "=========================================="
-        Write-Host "  📦 02 - تثبيت Git"
-        Write-Host "=========================================="
-        choco install git -y
-
-        Write-Host "=========================================="
-        Write-Host "  📦 03 - تثبيت NVM + Node 20.15.1 + Yarn + PNPM"
-        Write-Host "=========================================="
-        choco install nvm -y
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+        Write-Host "📦 03 - NVM + Node"
+        choco install nvm -y --no-progress
+        refreshenv 2>$null
+        $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                    [Environment]::GetEnvironmentVariable("Path","User")
         nvm install 20.15.1
         nvm use 20.15.1
         npm install -g yarn pnpm
 
-        Write-Host "=========================================="
-        Write-Host "  📦 04 - تثبيت Notepad++ + VS Code"
-        Write-Host "=========================================="
-        choco install notepadplusplus vscode -y
-
-        # Antigravity (أداة Google - غير مجانية غالبًا، سنثبت Python بدلًا)
-        choco install python -y
+        Write-Host "📦 04 - Editors"
+        choco install notepadplusplus vscode python -y --no-progress
         pip install antigravity 2>$null
 
-        Write-Host "=========================================="
-        Write-Host "  📦 05 - تثبيت Bruno"
-        Write-Host "=========================================="
-        choco install bruno -y
+        Write-Host "📦 05 - Bruno"
+        choco install bruno -y --no-progress
 
-        Write-Host "=========================================="
-        Write-Host "  📦 06 - تثبيت Docker Desktop + الخدمات"
-        Write-Host "=========================================="
-        choco install docker-desktop -y
+        Write-Host "📦 06 - Docker Desktop"
+        choco install docker-desktop -y --no-progress
 
-        # إنشاء docker-compose للخدمات
         $composeDir = "C:\docker-stacks"
         New-Item -ItemType Directory -Force -Path $composeDir | Out-Null
-
         @"
-        version: '3.8'
         services:
           dockge:
             image: louislam/dockge:1
-            container_name: dockge
-            restart: unless-stopped
-            ports:
-              - "5001:5001"
+            ports: ["5001:5001"]
+            volumes:
+              - /var/run/docker.sock:/var/run/docker.sock
           postgres:
             image: postgres:16
-            container_name: postgres
-            ports:
-              - "5432:5432"
+            ports: ["5432:5432"]
             environment:
+              POSTGRES_USER: admin
               POSTGRES_PASSWORD: admin000
+              POSTGRES_DB: maindb
           mysql:
             image: mysql:8
-            container_name: mysql
-            ports:
-              - "3306:3306"
+            ports: ["3306:3306"]
             environment:
               MYSQL_ROOT_PASSWORD: admin000
+              MYSQL_DATABASE: maindb
           adminer:
             image: adminer:latest
-            container_name: adminer
-            ports:
-              - "8080:8080"
+            ports: ["8080:8080"]
           minio:
             image: minio/minio:latest
-            container_name: minio
-            ports:
-              - "9000:9000"
-              - "9001:9001"
+            ports: ["9000:9000", "9001:9001"]
             environment:
               MINIO_ROOT_USER: admin
               MINIO_ROOT_PASSWORD: admin000
             command: server /data --console-address ":9001"
-        "@ | Out-File -FilePath "$composeDir\docker-compose.yml" -Encoding UTF8
+        "@ | Set-Content -Path "$composeDir\docker-compose.yml" -Encoding UTF8
 
-        Write-Host "✅ جميع الأدوات ثُبتت بنجاح!"
+        Write-Host "✅ Windows tools installation finished"
 
     # ==================================================
-    # 🌐 تشغيل نفق ngrok لـ RDP (Windows) - خلفية
+    # 🌐 ngrok tunnels (خلفية)
     # ==================================================
     - name: Start ngrok RDP (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        Start-Process ngrok -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
-        Start-Sleep -Seconds 10
+        Start-Process -FilePath "ngrok" -ArgumentList "tcp","3389","--log=stdout" -WindowStyle Hidden
+        Start-Sleep -Seconds 12
 
-    # ==================================================
-    # 🌐 تشغيل نفق ngrok لـ VNC (Linux GNOME) - خلفية
-    # ==================================================
     - name: Start ngrok VNC (Linux GNOME)
       if: env.SYSTEM_TYPE == 'ubuntu-24.04-gnome' || env.SYSTEM_TYPE == 'fedora-42'
       shell: bash
       run: |
         nohup ngrok tcp 5901 --log=stdout > /tmp/ngrok.log 2>&1 &
-        sleep 10
+        echo $! > /tmp/ngrok.pid
+        sleep 12
+        head -n 30 /tmp/ngrok.log || true
 
-    # ==================================================
-    # 🌐 تشغيل نفق ngrok لـ SSH (Linux Server) - خلفية
-    # ==================================================
     - name: Start ngrok SSH (Linux Server)
       if: env.SYSTEM_TYPE == 'ubuntu-24.04-server'
       shell: bash
       run: |
         nohup ngrok tcp 22 --log=stdout > /tmp/ngrok.log 2>&1 &
-        sleep 10
+        echo $! > /tmp/ngrok.pid
+        sleep 12
+        head -n 30 /tmp/ngrok.log || true
 
     # ==================================================
-    # 📡 عرض معلومات الاتصال
+    # 📡 معلومات الاتصال
     # ==================================================
     - name: Show machine info
       shell: bash
       run: |
-        sleep 5
+        sleep 3
         echo "=========================================="
-        echo "  🖥️  SYSTEM INFO"
+        echo "  🖥️  SYSTEM"
         echo "=========================================="
-        uname -a || ver
+        uname -a 2>/dev/null || ver 2>/dev/null || true
         echo ""
         echo "=========================================="
         echo "  🌍 PUBLIC IP"
         echo "=========================================="
-        curl -s https://api.ipify.org || true
+        curl -fsS https://api.ipify.org || true
         echo ""
         echo ""
         echo "=========================================="
-        echo "  🔗 NGROK TUNNEL"
+        echo "  🔗 NGROK TUNNEL  ← استخدم هذا للاتصال"
         echo "=========================================="
-        curl -s http://127.0.0.1:4040/api/tunnels | \
-          python3 -m json.tool 2>/dev/null || \
-          curl -s http://127.0.0.1:4040/api/tunnels || true
+        for i in 1 2 3 4 5; do
+          RESP=$(curl -fsS http://127.0.0.1:4040/api/tunnels 2>/dev/null || true)
+          if [ -n "$RESP" ]; then
+            echo "$RESP" | python3 -m json.tool 2>/dev/null || echo "$RESP"
+            # استخراج العنوان العام بشكل واضح
+            echo ""
+            echo ">>> PUBLIC URL:"
+            echo "$RESP" | python3 -c "
+        import sys,json
+        try:
+          d=json.load(sys.stdin)
+          for t in d.get('tunnels',[]):
+            print('   ', t.get('public_url',''))
+        except: pass
+        " 2>/dev/null || true
+            break
+          fi
+          echo "waiting ngrok api... ($i)"
+          sleep 3
+        done
         echo ""
         echo "=========================================="
         echo "  👤 CREDENTIALS"
         echo "=========================================="
-        echo "  Username: $REMOTE_USER"
-        echo "  Password: $REMOTE_PASS"
+        echo "  Username : $REMOTE_USER"
+        echo "  Password : $REMOTE_PASS"
         echo "=========================================="
         echo ""
         echo "=========================================="
-        echo "  🔌 EXPOSED PORTS (محليًا داخل الـ Runner)"
+        echo "  🔌 SERVICES (من داخل الجلسة عبر localhost)"
         echo "=========================================="
-        echo "  📺 RDP/VNC/SSH:  حسب النظام المختار"
-        echo "  🎛  Dockge:       http://localhost:5001"
-        echo "  🐘 PostgreSQL:   localhost:5432  (admin/admin000)"
-        echo "  🐬 MySQL:        localhost:3306  (root/admin000)"
-        echo "  🛠  Adminer:      http://localhost:8080"
-        echo "  🗄  MinIO API:    http://localhost:9000  (admin/admin000)"
-        echo "  🗄  MinIO Console: http://localhost:9001"
+        echo "  Dockge        http://localhost:5001"
+        echo "  PostgreSQL    localhost:5432   admin / admin000"
+        echo "  MySQL         localhost:3306   root  / admin000"
+        echo "  Adminer       http://localhost:8080"
+        echo "  MinIO API     http://localhost:9000"
+        echo "  MinIO Console http://localhost:9001  admin / admin000"
+        echo "=========================================="
+        echo ""
+        echo "  كيفية الاتصال:"
+        echo "  • GNOME/VNC  → VNC Viewer  على عنوان ngrok (منفذ عام)"
+        echo "  • Server/SSH → ssh $REMOTE_USER@HOST -p PORT"
+        echo "  • Windows    → mstsc / RDP على عنوان ngrok"
         echo "=========================================="
 
     # ==================================================
-    # ♻️ البقاء نشطًا
+    # ♻️ Keep Alive
     # ==================================================
     - name: Keep Alive
       shell: bash
       run: |
         while true; do
-          echo "✅ Runner alive at $(date)"
+          # إعادة تشغيل ngrok إن توقف
+          if [ -f /tmp/ngrok.pid ]; then
+            if ! kill -0 "$(cat /tmp/ngrok.pid)" 2>/dev/null; then
+              echo "⚠ ngrok died — restarting..."
+              case "$SYSTEM_TYPE" in
+                ubuntu-24.04-server) PORT=22 ;;
+                windows-*)           PORT=3389 ;;
+                *)                   PORT=5901 ;;
+              esac
+              if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+                PORT=3389
+              fi
+              nohup ngrok tcp "$PORT" --log=stdout > /tmp/ngrok.log 2>&1 &
+              echo $! > /tmp/ngrok.pid
+            fi
+          fi
+          echo "✅ alive $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           sleep 300
         done
