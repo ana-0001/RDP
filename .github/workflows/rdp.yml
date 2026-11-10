@@ -27,7 +27,7 @@ on:
 
       pass:
         description: "Password (empty = auto)"
-        default: admin000
+        default: Admin000!
 
       auto_schedule:
         description: "Auto Schedule (يتطلب Variable: AUTO_SCHEDULE=on)"
@@ -76,7 +76,7 @@ jobs:
       run: |
         set -e
         PASS="${{ inputs.pass }}"
-        if [ -z "$PASS" ]; then PASS="admin000"; fi
+        if [ -z "$PASS" ]; then PASS="Admin000!"; fi
 
         USER="${{ inputs.user }}"
         if [ -z "$USER" ]; then USER="root"; fi
@@ -144,22 +144,31 @@ jobs:
         ngrok config add-authtoken "$NGROK_TOKEN"
 
     # ==================================================
-    # 🪟 تفعيل RDP (Windows)
+    # 🪟 تفعيل RDP (Windows) - مُصلح
     # ==================================================
     - name: Enable RDP (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
+        # تعطيل سياسة تعقيد كلمات المرور في Windows
+        secedit /export /cfg C:\secpol.cfg
+        (Get-Content C:\secpol.cfg) -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' -replace 'MinimumPasswordLength = \d+', 'MinimumPasswordLength = 0' | Set-Content C:\secpol.cfg
+        secedit /configure /db C:\windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY 2>$null
+        Remove-Item C:\secpol.cfg -Force -ErrorAction SilentlyContinue
+
+        # تفعيل RDP والجدار الناري
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop" 2>$null
+
+        # إنشاء المستخدم
         $u = $env:REMOTE_USER
         $p = $env:REMOTE_PASS
-        if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { net user $u $p /add } else { net user $u $p }
+        net user $u $p /add /y 2>$null || net user $u $p 2>$null
         net localgroup administrators $u /add 2>$null
         net localgroup "Remote Desktop Users" $u /add 2>$null
 
     # ==================================================
-    # 🐧 إعداد Ubuntu GNOME الأصلي + VNC (مُصلح)
+    # 🐧 إعداد Ubuntu GNOME الأصلي + VNC
     # ==================================================
     - name: Setup Ubuntu GNOME Desktop + VNC
       if: env.SYSTEM_TYPE == 'ubuntu-24.04-gnome' || env.SYSTEM_TYPE == 'fedora-42'
@@ -300,14 +309,14 @@ jobs:
             ports: ["5432:5432"]
             environment:
               POSTGRES_USER: admin
-              POSTGRES_PASSWORD: admin000
+              POSTGRES_PASSWORD: Admin000!
               POSTGRES_DB: maindb
           mysql:
             image: mysql:8
             container_name: mysql
             ports: ["3306:3306"]
             environment:
-              MYSQL_ROOT_PASSWORD: admin000
+              MYSQL_ROOT_PASSWORD: Admin000!
               MYSQL_DATABASE: maindb
           adminer:
             image: adminer:latest
@@ -319,7 +328,7 @@ jobs:
             ports: ["9000:9000", "9001:9001"]
             environment:
               MINIO_ROOT_USER: admin
-              MINIO_ROOT_PASSWORD: admin000
+              MINIO_ROOT_PASSWORD: Admin000!
             command: server /data --console-address ":9001"
         COMPOSE
         cd /opt/stacks
@@ -356,12 +365,12 @@ jobs:
             ports: ["5432:5432"]
             environment:
               POSTGRES_USER: admin
-              POSTGRES_PASSWORD: admin000
+              POSTGRES_PASSWORD: Admin000!
           mysql:
             image: mysql:8
             ports: ["3306:3306"]
             environment:
-              MYSQL_ROOT_PASSWORD: admin000
+              MYSQL_ROOT_PASSWORD: Admin000!
           adminer:
             image: adminer:latest
             ports: ["8080:8080"]
